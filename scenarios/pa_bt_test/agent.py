@@ -13,9 +13,10 @@ work_rate = config['agents']['work_rate']
 behavior_tree_xml = f"{os.path.dirname(os.path.abspath(__file__))}/{config['agents']['behavior_tree_xml']}"
 
 class Agent(BaseAgent):
-    def __init__(self, agent_id, position, tasks_info):
+    def __init__(self, agent_id, position, tasks_info, sams_info):
         super().__init__(agent_id, position, tasks_info)
         self.work_rate = work_rate
+        self.sams_info = sams_info
 
         
         self.task_amount_done = 0.0        
@@ -52,7 +53,7 @@ class Agent(BaseAgent):
         return failed_conditions
 
 
-def generate_agents(tasks_info):
+def generate_agents(tasks_info, sams_info):
     agent_quantity = config['agents']['quantity']
     agent_locations = config['agents']['locations']
 
@@ -64,7 +65,7 @@ def generate_agents(tasks_info):
                                       radius=agent_locations['non_overlap_radius'])
 
     # Initialize agents
-    agents = [Agent(idx, pos, tasks_info) for idx, pos in enumerate(agents_positions)]
+    agents = [Agent(idx, pos, tasks_info, sams_info) for idx, pos in enumerate(agents_positions)]
 
     # Provide the global info and create behavior tree
     for agent in agents:
