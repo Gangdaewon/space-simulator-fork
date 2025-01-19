@@ -89,6 +89,7 @@ class Env(BaseEnv):
     async def step(self):
         # Main simulation loop logic
         for agent in self.agents:
+            agent.get_sams_nearby()
             result = await agent.run_tree()
             
             if result == Status.FAILURE:  # Check if the result is FAILURE
