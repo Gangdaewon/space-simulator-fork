@@ -5,6 +5,7 @@ from modules.utils import config, generate_positions
 from modules.base_agent import BaseAgent, bt_module
 from scenarios.pa_bt_test.task import task_colors
 from modules.base_bt_nodes import Status, BTNodeList, SyncCondition
+import random
 
 # Load agent configuration (Scenario Specific)
 work_rate = config['agents']['work_rate']
@@ -18,7 +19,8 @@ class Agent(BaseAgent):
         self.work_rate = work_rate
         self.sams_info = sams_info
         self.task_amount_done = 0.0   
-        self.detected_sams = set()     
+        self.detected_sams = set()
+        self.blackboard['missiles_remained'] = 4  
 
     def draw(self, screen):
         size = 10
@@ -51,69 +53,37 @@ class Agent(BaseAgent):
                     failed_conditions.append(node_name)
         return failed_conditions
     
-    # def get_sams_nearby(self, radius=None):
-    #     """
-    #     Detect SAMs within the agent's situation awareness radius and print all detected SAMs once.
-    #     """
-    #     _radius = self.situation_awareness_radius if radius is None else radius
-    #     current_detected_sams = set()  # 현재 탐지된 SAMs 저장
-
-    #     if _radius > 0:
-    #         radius_squared = _radius ** 2
-    #         current_detected_sams = {
-    #             sam.sam_id for sam in self.sams_info
-    #             if (self.position - sam.position).length_squared() <= radius_squared
-    #         }
-
-    #     # 새롭게 탐지된 SAMs
-    #     newly_detected_sams = current_detected_sams - self.detected_sams
-
-    #     # 탐지 상태가 변할 때만 메시지 출력
-    #     if newly_detected_sams or self.detected_sams != current_detected_sams:
-    #         if current_detected_sams:
-    #             print(f"Agent {self.agent_id}: Currently detecting SAM IDs: {list(current_detected_sams)}")
-    #         else:
-    #             print(f"Agent {self.agent_id}: No SAM detected.")
-
-    #     # 탐지 상태 업데이트
-    #     self.detected_sams = current_detected_sams
-
-    #     # Update blackboard
-    #     self.blackboard['nearby_sams'] = list(current_detected_sams)
-    #     return current_detected_sams
     def get_sams_nearby(self, radius=None):
         """
         Detect SAMs within the agent's situation awareness radius and print detection changes.
         """
         _radius = self.situation_awareness_radius if radius is None else radius
-        current_detected_sams = set()  # 현재 탐지된 SAMs 저장
+        current_detected_sams = [] # 현재 탐지된 SAMs 저장
 
         if _radius > 0:
             radius_squared = _radius ** 2
-            current_detected_sams = {
-                sam.sam_id for sam in self.sams_info
-                if (self.position - sam.position).length_squared() <= radius_squared
-            }
-
+            current_detected_sams = [
+                sam for sam in self.sams_info
+                if (self.position - sam.position).length_squared() <= radius_squared and not sam.completed
+            ]
+        
         # 새롭게 탐지된 SAMs
-        newly_detected_sams = current_detected_sams - self.detected_sams
-
+        newly_detected_sams = [sam for sam in current_detected_sams if sam not in self.detected_sams]
         # 탐지되지 않게 된 SAMs
-        no_longer_detected_sams = self.detected_sams - current_detected_sams
+        no_longer_detected_sams = [sam for sam in self.detected_sams if sam not in current_detected_sams]
 
         # 탐지 상태가 변할 때만 메시지 출력
         if newly_detected_sams:
-            print(f"Agent {self.agent_id}: Currently detecting SAM IDs: {list(current_detected_sams)} (Newly detected: {list(newly_detected_sams)})")
+            print(f"Agent {self.agent_id}: Currently detecting SAM IDs: {[sam.sam_id for sam in current_detected_sams]} (Newly detected: {[sam.sam_id for sam in newly_detected_sams]})")
         if no_longer_detected_sams:
-            print(f"Agent {self.agent_id}: sam_id {no_longer_detected_sams} is no longer detected: {list(no_longer_detected_sams)} (Still detecting: {list(current_detected_sams)})")
+            print(f"Agent {self.agent_id}: sam_id {[sam.sam_id for sam in no_longer_detected_sams]} is no longer detected: {[sam.sam_id for sam in no_longer_detected_sams]} (Still detecting: {[sam.sam_id for sam in current_detected_sams]})")
 
         # 탐지 상태 업데이트
-        self.detected_sams = current_detected_sams
+        self.detected_sams = set(current_detected_sams)
 
         # Update blackboard
-        self.blackboard['nearby_sams'] = list(current_detected_sams)
-        return current_detected_sams
-
+        self.blackboard['nearby_sams'] = current_detected_sams
+        return 
 
 def generate_agents(tasks_info, sams_info):
     agent_quantity = config['agents']['quantity']

@@ -32,24 +32,18 @@ class Task(BaseTask):
 class SAM(BaseTask):
     def __init__(self, sam_id, position):
         super().__init__(id = sam_id, position = position, id_type="sam")
-        self.active = True
         self.amount = random.uniform(config['sams']['amounts']['min'], config['sams']['amounts']['max'])        
         self.radius = self.amount / config['simulation']['sam_visualisation_factor']
         self.detection_range = config['sams']['detection_range']
         self.color = task_colors.get(self.sam_id, (255, 0, 0))
         
-    # 시나리오 상 SAM을 타격했을 때 처리에 필요할 경우를 위해 추가
-    def deactivate(self):
-        self.active = False
-        self.color = (0, 0, 0)
-        
     def draw(self, screen):
-        if self.active:
+        if not self.completed:
             pygame.draw.circle(screen, self.color, self.position, int(self.detection_range), 1)
             pygame.draw.circle(screen, self.color, self.position, int(self.radius))
             
     def draw_task_id(self, screen):
-        if self.active:
+        if not self.completed:
             font = pygame.font.Font(None, 15)
             text_surface = font.render(f"SAM_id {self.sam_id}: {self.amount:.2f}", True, (250, 250, 250))
             screen.blit(text_surface, (self.position[0], self.position[1]))
