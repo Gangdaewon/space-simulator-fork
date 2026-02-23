@@ -1,0 +1,31 @@
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+permissions: write-all
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false  
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: AI Code Review
+        uses: inmo-jang/ai-codereviewer@main
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+          # Choose your AI provider and key
+          AI_PROVIDER: "openai" # or "anthropic" or "google"
+          AI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AI_MODEL: "gpt-4o-mini"
+          AI_TEMPERATURE: 0.3 # 0 to 1 - higher values = more creativity and variance
+
+          # Optional configurations
+          APPROVE_REVIEWS: true
+          MAX_COMMENTS: 20 # 0 to disable
+          PROJECT_CONTEXT: "This is a Python project to develop a simulator for multi-robot decision-making research."
+          CONTEXT_FILES: "package.json,README.md"
+          EXCLUDE_PATTERNS: "**/*.lock,**/*.json,**/*.md,**/*.yaml,**/*.png,**/*.xml"

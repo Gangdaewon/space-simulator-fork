@@ -10,9 +10,10 @@ import shutil
 import pandas as pd
 import matplotlib.pyplot as plt
 import xml.etree.ElementTree as ET
+import importlib
 
 def load_config(config_file):
-    with open(config_file, 'r') as f:
+    with open(config_file, 'r', encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 # Global variable to hold the configuration
@@ -21,13 +22,17 @@ config = None
 def set_config(config_file):
     global config
     config = load_config(config_file)
+    config['config_file_path'] = config_file
 
 # Pre-render static elements
 def pre_render_text(text, font_size, color):
     font = pygame.font.Font(None, font_size)
     return font.render(text, True, color)
 
-def generate_positions(quantity, x_min, x_max, y_min, y_max, radius=10):
+def generate_positions(quantity, x_min, x_max, y_min, y_max, radius=10, seed=None):
+    if seed is not None:
+        random.seed(seed)
+
     positions = []
     while len(positions) < quantity:
         pos = (random.randint(x_min + radius, x_max - radius),
@@ -39,18 +44,35 @@ def generate_positions(quantity, x_min, x_max, y_min, y_max, radius=10):
             positions.append(pos)
     return positions
 
+def generate_agent_positions(quantity, x_min, x_max, y_min, y_max, radius=10, seed=None):
+    return generate_positions(quantity, x_min, x_max, y_min, y_max, radius=radius, seed=seed)
+    
+def generate_task_positions(quantity, x_min, x_max, y_min, y_max, radius=10, seed=None):
+    task_seed = seed + 1000 if seed is not None else None
+    return generate_positions(quantity, x_min, x_max, y_min, y_max, radius=radius, seed=task_seed)
+
+def generate_random_values(quantity, min, max, seed=None):
+    if seed is not None:
+        random.seed(seed)
+
+    value_list = []
+    while len(value_list) < quantity:
+        _value = random.randint(min, max)
+        value_list.append(_value)
+    return value_list
 
 # Generate task_colors based on tasks.quantity
-def generate_task_colors(quantity):
-    colors = cm.get_cmap('tab20', quantity)  # 'tab20' is a colormap with 20 distinct colors
+def generate_task_colors(quantity):    
+    colors = cm.get_cmap('tab20', 20)  # 'tab20' is a colormap with 20 distinct colors
     task_colors = {}
     for i in range(quantity):
-        color = colors(i)  # Get color from colormap
+        color = colors(i % 20)  # Get color from colormap
         task_colors[i] = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))  # Convert to RGB tuple
     return task_colors
 
 
-
+def get_file_dirname(file):
+    return os.path.dirname(os.path.abspath(file))  # 모듈 파일 기준
 
 # BT xml
 def parse_behavior_tree(xml_path):
@@ -74,11 +96,80 @@ def merge_dicts(dict1, dict2):
             
     return merged_dict    
 
+def convert_value(v): # "None" → None; 문자열 숫자는 숫자로 변환
+    if v == "None":
+        return None
+    if isinstance(v, str):
+        if v.isdigit() or (v.startswith('-') and v[1:].isdigit()):
+            return int(v)
+        try:
+            return float(v)
+        except ValueError:
+            pass
+    return v
+
+def first_action_or_condition_name(children):
+    """
+    children 및 그 하위(children만 사용)를 DFS로 순회하며
+    type이 'Action' 또는 'Condition'인 첫 노드의 name을 반환.
+    없으면 None 반환.
+    """
+    if not children:
+        return None
+
+    def dfs(nodes):
+        for node in nodes:
+            node_type = getattr(node, "type", None)
+            if node_type in ("Action", "Condition"):
+                name = getattr(node, "name", None)
+                if name is not None:
+                    return name  # 첫 유효 name 반환
+
+            subchildren = getattr(node, "children", None)
+            if subchildren:
+                found = dfs(subchildren)
+                if found is not None:
+                    return found
+        return None
+
+    return dfs(children)
+
+def optional_import(name):
+    if not name:
+        return None
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as e:
+        # 요청한 모듈 자체가 없을 때만 None 반환
+        if e.name == name:
+            return None
+        # 내부 의존 모듈 누락 등은 그대로 올림
+        raise
+
+class ObjectToRender:
+    def __init__(self, position, image_path, scale_by = None, width = None, height = None, rotation=0):
+        image_temp = pygame.image.load(image_path)        
+        if scale_by is not None:
+            image_temp = pygame.transform.scale_by(image_temp, scale_by)
+        if width is not None and height is not None:
+            image_temp = pygame.transform.scale(image_temp, (width, height))
+
+        self.image = image_temp
+        self.position = pygame.math.Vector2(position)  
+        self.rotation = rotation
+        self.width = width
+        self.height = height
+
+    def draw(self, screen):        
+        image_current = pygame.transform.rotate(self.image, self.rotation)          
+        screen.blit(image_current, (self.position.x, self.position.y))    
+
 
 # Results saving
 class ResultSaver:
-    def __init__(self, config_file_path):
-        self.config_file_path = config_file_path
+    def __init__(self, config, seed=None):  # seed 추가
+        self.config_file_path = config['config_file_path']
+        self.seed = seed  # seed 저장
         self.result_file_path = self.generate_output_filename()
         self.timewise_result_file_path = self.generate_output_filename(additional_keyword="timewise")
         self.agentwise_result_file_path = self.generate_output_filename(additional_keyword="agentwise")
@@ -86,8 +177,8 @@ class ResultSaver:
         self.df_agentwise_result = None
 
     def generate_output_filename(self, extension = "csv", additional_keyword = None):
-        agent_quantity = config['agents']['quantity']
-        task_quantity = config['tasks']['quantity']
+        agent_quantity = config['agents'].get('quantity', 0)
+        task_quantity = config['tasks'].get('quantity', 0)
         decision_making_module_path = config['decision_making']['plugin']
         module_path, class_name = decision_making_module_path.rsplit('.', 1)
         datetime_now = datetime.datetime.now()
@@ -101,10 +192,14 @@ class ResultSaver:
         else:
             output_dir = output_parent_folder        
         os.makedirs(output_dir, exist_ok=True) 
-        if additional_keyword == None:
-            file_path = os.path.join(output_dir, f"{class_name}_a{agent_quantity}_t{task_quantity}_{current_time_string}.{extension}")
+
+        # seed를 파일명에 포함
+        seed_string = f"_seed{self.seed}" if self.seed is not None else ""
+
+        if additional_keyword is None:
+            file_path = os.path.join(output_dir, f"{class_name}_a{agent_quantity}_t{task_quantity}{seed_string}_{current_time_string}.{extension}")
         else:
-            file_path = os.path.join(output_dir, f"{class_name}_a{agent_quantity}_t{task_quantity}_{current_time_string}_{additional_keyword}.{extension}")
+            file_path = os.path.join(output_dir, f"{class_name}_a{agent_quantity}_t{task_quantity}{seed_string}_{current_time_string}_{additional_keyword}.{extension}")
 
         return file_path
 
@@ -127,7 +222,7 @@ class ResultSaver:
                 image = Image.fromarray(image)
                 image_list.append(image)
 
-            imageio.mimsave(gif_file_path, image_list, duration=1.0/gif_recording_fps)  # Adjust duration for faster playback                    
+            imageio.mimsave(gif_file_path, image_list, duration=1.0/gif_recording_fps, loop=0)  # Adjust duration for faster playback                    
             # imageio.mimsave(gif_file_path, frames)
             print(f"Saved GIF: {gif_file_path}")            
 
@@ -167,41 +262,18 @@ class ResultSaver:
         
         # Extract time and data columns
         time = df['time']
-        agents_total_distance_moved = df['agents_total_distance_moved']
-        agents_total_task_amount_done = df['agents_total_task_amount_done']
-        remaining_tasks = df['remaining_tasks']
-        tasks_total_amount_left = df['tasks_total_amount_left']
+        data_columns = [col for col in df.columns if col != 'time']
+        num_plots = len(data_columns)
 
+        plt.figure(figsize=(12, 2 * num_plots))
 
-        plt.figure(figsize=(12, 8))
-
-        plt.subplot(2, 2, 1)
-        plt.plot(time, agents_total_distance_moved, label='Total Distance Moved by Agents')
-        plt.xlabel('Time')
-        plt.ylabel('Distance Moved')
-        plt.legend()
-        plt.grid(True)  
-
-        plt.subplot(2, 2, 2)
-        plt.plot(time, agents_total_task_amount_done, label='Total Task Amount Done by Agents')
-        plt.xlabel('Time')
-        plt.ylabel('Task Amount Done')
-        plt.legend()
-        plt.grid(True)  
-
-        plt.subplot(2, 2, 3)
-        plt.plot(time, remaining_tasks, label='The Number of Remaining Tasks')
-        plt.xlabel('Time')
-        plt.ylabel('The Number of Remaining Tasks')
-        plt.legend()
-        plt.grid(True)  
-
-        plt.subplot(2, 2, 4)
-        plt.plot(time, tasks_total_amount_left, label='Total Amount of Tasks')
-        plt.xlabel('Time')
-        plt.ylabel('Tasks Total Amount')
-        plt.legend()
-        plt.grid(True)  
+        for i, col in enumerate(data_columns):
+            plt.subplot((num_plots + 1) // 2, 2, i + 1)
+            plt.plot(time, df[col], label=col)
+            plt.xlabel('Time')
+            plt.ylabel(col.replace('_', ' ').title())
+            plt.legend()
+            plt.grid(True)
 
         plt.tight_layout()
 
