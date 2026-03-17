@@ -235,83 +235,121 @@ class Env(BaseEnv):
                 
     def save_static_results(self):
         """
-        Save assignment results:
-        1. Distance-based cost CSV (existing)
-        2. Assignment mapping CSV (agent_id → assigned_task_id)
+        Save all static assignment results into a single CSV:
+        {case_name}_{seed}_static_results.csv
+
+        Columns: Agent_ID | Assigned_Task_ID | Bundle | Distance_to_Task | {Score_Label}
+        Last row: Total with summed Distance and Score.
         """
-        # --- 1. Distance cost CSV (기존 로직 유지) ---
-        data = []
-        total_dist = 0.0
-        
-        for agent in self.agents:
-            if agent.type == 'Follower':
-                planned = getattr(agent, 'planned_tasks', [])
-                if planned:
-                    current_pos = agent.position
-                    agent_path_dist = 0.0
-                    for task in planned:
-                        tpos = pygame.Vector2(task.position)
-                        agent_path_dist += current_pos.distance_to(tpos)
-                        current_pos = tpos
-                    data.append([agent.agent_id, agent_path_dist])
-                    total_dist += agent_path_dist
-                else:
-                    data.append([agent.agent_id, -1.0])
-        
-        data.append(['Total', total_dist])
-        
-        # Save to custom directory
         case_name = self.config.get('case_name', 'unknown')
         case_name = case_name.strip().lower().replace(' ', '_')
         seed = self.config['simulation'].get('random_seed', 0)
-        
-        assignments_dir = os.path.join("output/assignments", SAVE_SUB_DIR)
-        os.makedirs(assignments_dir, exist_ok=True)
-        
-        file_name = f"{case_name}_{seed}_static_assignment_cost.csv"
-        file_path = os.path.join(assignments_dir, file_name)
-        
-        with open(file_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['Agent_ID', 'Distance_to_Task'])
-            writer.writerows(data)
-            
-        print(f"[Static Cost] Saved: {file_path}")
 
-        # --- 2. Assignment mapping CSV ---
-        self._save_assignment_csv()
+        algo_type = self._detect_algorithm_type()
+        score_label_map = {
+            'cbba': 'Expected_Reward_from_Task',
+            'sga': 'Expected_Reward_from_Task',
+            'hungarian': 'Expected_Reward',
+            'grape': 'Utility',
+        }
+        score_label = score_label_map.get(algo_type, 'Score')
 
-    def _save_assignment_csv(self):
-        """
-        Save assignment mapping CSV: {case_name}_{seed}_assignments.csv
-        to output/assignments/
-        """
-        # Build case_name from config
-        case_name = self.config.get('case_name', 'unknown')
-        case_name = case_name.strip().lower().replace(' ', '_')
-        seed = self.config['simulation'].get('random_seed', 0)
-        
-        # Prepare output directory
-        assignments_dir = os.path.join("output/assignments", SAVE_SUB_DIR)
-        os.makedirs(assignments_dir, exist_ok=True)
-        
-        # Build filename
-        file_name = f"{case_name}_{seed}_assignments.csv"
-        file_path = os.path.join(assignments_dir, file_name)
-        
-        # Collect assignment data
+        # --- Collect all data in a single agent loop ---
         rows = []
+        total_dist = 0.0
+        total_score = 0.0
+
         for agent in self.agents:
-            if agent.type == 'Follower':
-                planned = getattr(agent, 'planned_tasks', [])
-                task_id = planned[0].task_id if planned else None
-                bundle = [t.task_id for t in planned] if planned else []
-                rows.append([agent.agent_id, task_id, bundle])
-        
-        # Write CSV
+            if agent.type != 'Follower':
+                continue
+
+            planned = getattr(agent, 'planned_tasks', [])
+
+            # Assignment info
+            task_id = planned[0].task_id if planned else None
+            bundle = [t.task_id for t in planned] if planned else []
+
+            # Distance cost
+            if planned:
+                current_pos = agent.position
+                agent_path_dist = 0.0
+                for task in planned:
+                    tpos = pygame.Vector2(task.position)
+                    agent_path_dist += current_pos.distance_to(tpos)
+                    current_pos = tpos
+                total_dist += agent_path_dist
+            else:
+                agent_path_dist = -1.0
+
+            # Score
+            score = self._compute_agent_score(algo_type, agent, planned)
+            total_score += score
+
+            rows.append([agent.agent_id, task_id, bundle, agent_path_dist, score])
+
+        # Total row
+        rows.append(['Total', '', '', total_dist, total_score])
+
+        # --- Write single CSV ---
+        assignments_dir = os.path.join("output/assignments", SAVE_SUB_DIR)
+        os.makedirs(assignments_dir, exist_ok=True)
+
+        file_name = f"{case_name}_{seed}_static_results.csv"
+        file_path = os.path.join(assignments_dir, file_name)
+
         with open(file_path, 'w', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['agent_id', 'assigned_task_id', 'bundle'])
+            writer.writerow(['Agent_ID', 'Assigned_Task_ID', 'Bundle', 'Distance_to_Task', score_label])
             writer.writerows(rows)
-        
-        print(f"[Static Assignment] Saved: {file_path}")
+
+        print(f"[Static Results] Saved: {file_path} (algorithm: {algo_type}, metric: {score_label})")
+
+    def _detect_algorithm_type(self):
+        """
+        Detect algorithm type from case_name config.
+        Returns one of: 'cbba', 'sga', 'grape', 'hungarian'
+        """
+        case_name = self.config.get('case_name', '').upper()
+        if 'SGA' in case_name:
+            return 'sga'
+        elif 'CBBA' in case_name:
+            return 'cbba'
+        elif 'GRAPE' in case_name:
+            return 'grape'
+        elif 'HUNGARIAN' in case_name:
+            return 'hungarian'
+        return 'unknown'
+
+    def _compute_agent_score(self, algo_type, agent, planned):
+        """
+        Compute score for a single agent using the algorithm-specific method.
+        - CBBA/SGA: CenSGA.calculate_score_along_path
+        - Hungarian: Hungarian.compute_weight_value
+        - GRAPE: CenGRAPE.compute_utility
+        """
+        from types import SimpleNamespace
+
+        if not planned:
+            return 0.0
+
+        if algo_type in ('cbba', 'sga'):
+            from scenarios.features.cenwrapper.sga import SGA
+            return SGA.calculate_score_along_path(None, agent, planned)
+
+        elif algo_type == 'hungarian':
+            from scenarios.features.cenwrapper.hungarian import Hungarian
+            return Hungarian.compute_weight_value(None, agent, planned[0])
+
+        elif algo_type == 'grape':
+            from scenarios.features.cenwrapper.cen_grape import CenGRAPE
+            # Build partition from all agents' current planned_tasks
+            partition = {}
+            for a in self.agents:
+                if a.type == 'Follower':
+                    p = getattr(a, 'planned_tasks', [])
+                    if p:
+                        partition.setdefault(p[0].task_id, set()).add(a.agent_id)
+            grape_ctx = SimpleNamespace(partition=partition)
+            return CenGRAPE.compute_utility(grape_ctx, agent, planned[0])
+
+        return 0.0

@@ -56,18 +56,18 @@ class CBBA:
 
         # Check if the existing task is done
         if self.assigned_task is not None and self.assigned_task.completed:
-            _done_task_id = self.assigned_task.task_id
-            if _done_task_id in self.bundle:
-                self.bundle.remove(_done_task_id)
-            if self.assigned_task in self.path:
-                self.path.remove(self.assigned_task)
+            if len(self.path) != 0 and self.path[0] == self.assigned_task:
+                self.path.pop(0)
+                self.bundle.pop(0)
+            self.assigned_task = None
+            self.phase = Phase.BUILD_BUNDLE
 
         if len(self.bundle) == 0:
             self.phase = Phase.BUILD_BUNDLE
 
         # Check if new tasks appear
-        # if self.has_missing_tasks(_local_tasks_info):
-        #     self.phase = Phase.BUILD_BUNDLE
+        if self.has_missing_tasks(_local_tasks_info):
+            self.phase = Phase.BUILD_BUNDLE
 
         # Give up the decision-making process if there is no task nearby 
         if len(_local_tasks_info) == 0 and len(self.bundle) == 0: 
@@ -88,9 +88,8 @@ class CBBA:
         # Look for a task within situation awareness radius if there is no existing assigned task
         # if self.assigned_task is None:
         if self.phase == Phase.BUILD_BUNDLE:
-            # Pre-BUILD: clean stale entries using received messages
-            self._process_unvalid_bids(_local_messages_received)
-            self.build_bundle(_local_tasks_info)
+            # Phase 1 Build Bundle 
+            self.build_bundle(_local_tasks_info)            
             # Broadcasting
             self.agent.message_to_share = { 
                 'agent_id': self.agent.agent_id,
@@ -226,14 +225,6 @@ class CBBA:
                 if len(updated_bundle) > 0:
                     self.no_bundle_duration = 0
 
-            # Post-CONSENSUS broadcast: update message_to_share so other agents (speeds up convergence)
-            self.agent.message_to_share = {
-                'agent_id': self.agent.agent_id,
-                'winning_agents': copy.deepcopy(self.z),
-                'winning_bids': copy.deepcopy(self.y),
-                'message_received_time_stamp': copy.deepcopy(self.s)
-                }
-
             if updated_bundle == self.bundle: # NOTE: 원래 모든 agents가 다 converge할 때까지 기다려야하는데, 분산화 현실성상 진행
                 # Converged!
 
@@ -256,19 +247,7 @@ class CBBA:
         else:
             self.agent.reset_movement()  # Neutralise the agent's current movement during converging to a consensus
             return None
-
-    def _process_unvalid_bids(self, messages):
-        for msg in messages:
-            if not all(k in msg for k in ('agent_id', 'winning_agents')):
-                continue
-            sender_id = msg['agent_id']
-            if sender_id == self.agent.agent_id:
-                continue
-            sender_z = msg['winning_agents']  # live reference
-            for _task_id in list(self.z.keys()):
-                if self.z.get(_task_id) == sender_id and sender_z.get(_task_id) != sender_id:
-                    self._reset(_task_id)
-
+    
     def _update(self, task_id, y_k, z_k):
         self.y[task_id] = y_k[task_id]   # Winning bid update
         self.z[task_id] = z_k[task_id]   # Winning agent update
@@ -288,15 +267,8 @@ class CBBA:
                 _n_bar = idx
                 break
 
-        _tasks_to_remove = set(self.bundle[_n_bar:])
-        for _task_id in self.bundle[_n_bar+1:]:
-            # Only reset own stale bids; keep other agents' valid info from consensus
-            if self.z.get(_task_id) == self.agent.agent_id:
-                self.y[_task_id] = float('-inf')
-                self.z[_task_id] = None
-
         _bundle = self.bundle[0:_n_bar]
-        _path = [t for t in self.path if t.task_id not in _tasks_to_remove]
+        _path = self.path[0:_n_bar]
 
         return _bundle, _path
 
@@ -311,10 +283,12 @@ class CBBA:
         # J = list(range(self.task_num))
         
 
-        while len(self.bundle) < min(MAX_TASKS_PER_AGENT, len(_local_tasks_info)): #or self.has_missing_tasks(_local_tasks_info):
+        while len(self.bundle) < min(MAX_TASKS_PER_AGENT, len(_local_tasks_info)) or self.has_missing_tasks(_local_tasks_info):
+            # Calculate S_p for the constructed path list
+            
 
             # Line 7
-            my_bid_list, best_insertion_idx_list = self.get_my_bid_value_list(_local_tasks_info)
+            my_bid_list, best_insertion_idx_list = self.get_my_bid_value_list(_local_tasks_info) 
 
             # Line 8~9
             task_to_add = self.get_best_task(my_bid_list)
@@ -324,24 +298,31 @@ class CBBA:
             # Line 10
             best_insertion_idx = best_insertion_idx_list[task_to_add.task_id]
 
-            # Line 11: Bundle records selection order (append)
-            self.bundle.append(task_to_add.task_id)
-            # Line 12: Path records visit order (insert at best position)
+            # Line 11
+            self.bundle.insert(best_insertion_idx, task_to_add.task_id)
+            # Line 12
             self.path.insert(best_insertion_idx, task_to_add)
             # Line 13
             self.y[task_to_add.task_id] = my_bid_list[task_to_add.task_id]
-            # Line 14
+            # LIne 14
             self.z[task_to_add.task_id] = self.agent.agent_id
+
+
+            # Reset Winning bid value after best_insertion_idx
+            for _task_id in self.bundle[best_insertion_idx+1:]:
+                self.y[_task_id] = float('-inf')        
+
 
             # Truncated by MAX_TASKS_PER_AGENT
             if len(self.bundle) > MAX_TASKS_PER_AGENT:
                 last_end_task_id = self.bundle[-1]
                 self._reset(last_end_task_id)
                 self.bundle = self.bundle[0:MAX_TASKS_PER_AGENT]
-                self.path = [t for t in self.path if t.task_id != last_end_task_id]
+                self.path = self.path[0:MAX_TASKS_PER_AGENT]
 
 
 
+    
     def update_time_stamp(self, _local_agents_info, _local_messages_received):
         """
         Eqn (5)
@@ -423,23 +404,6 @@ class CBBA:
 
         return self.agent.tasks_info[best_task_id] if best_task_score > float('-inf') else None
 
-    # def calculate_score_along_path(self, agent_position, path):
-    #     """
-    #     Compute S^{p_i} in Eqn (11) in the CBBA paper
-    #     """
-
-    #     current_position = agent_position
-    #     expected_reward_from_task = 0
-    #     distance_to_next_task_from_start = 0
-    #     for task in path:
-    #         next_position = pygame.Vector2(task.position)
-    #         distance_to_next_task_from_start += current_position.distance_to(next_position)
-    #         # Time-discounted reward
-    #         expected_reward_from_task += LAMBDA**(distance_to_next_task_from_start/self.agent.max_speed + task.amount/self.agent.work_rate)#*task.amount
-    #         # expected_reward_from_task += (task.amount - (distance_to_next_task_from_start/self.agent.max_speed + task.amount/self.agent.work_rate))
-    #         current_position = next_position
-
-    #     return expected_reward_from_task
     def calculate_score_along_path(self, agent_position, path): 
         """
         Compute S^{p_i} in Eqn (11) in the CBBA paper 
@@ -447,11 +411,13 @@ class CBBA:
         
         current_position = agent_position
         expected_reward_from_task = 0
-        cumulative_time = 0
+        distance_to_next_task_from_start = 0
         for task in path:
             next_position = pygame.Vector2(task.position)
-            cumulative_time += current_position.distance_to(next_position)  # / agent.max_speed # + task.amount / agent.work_rate
-            expected_reward_from_task += LAMBDA**cumulative_time
+            distance_to_next_task_from_start += current_position.distance_to(next_position)
+            # Time-discounted reward
+            expected_reward_from_task += LAMBDA**(distance_to_next_task_from_start/self.agent.max_speed + task.amount/self.agent.work_rate)#*task.amount            
+            # expected_reward_from_task += (task.amount - (distance_to_next_task_from_start/self.agent.max_speed + task.amount/self.agent.work_rate))
             current_position = next_position
 
         return expected_reward_from_task
