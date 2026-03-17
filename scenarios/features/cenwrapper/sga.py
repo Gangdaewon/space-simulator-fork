@@ -107,22 +107,25 @@ class SGA(SyncAction):
             # CBBA: _update와 동일
             self.winning_bids[best_task.task_id] = best_gain
             self.winning_agents[best_task.task_id] = best_agent.agent_id
-            
+
+            # Bundle: selection order (append), Path: visit order (insert)
             self.bundles[best_agent.agent_id].append(best_task.task_id)
             self.paths[best_agent.agent_id].insert(best_insertion_idx, best_task)
-            
-            # CBBA: update_bundle_and_path와 동일
+
+            # CBBA: update_bundle_and_path와 동일한 truncation
             if existing_winning_agent_id is not None and existing_winning_agent_id != best_agent.agent_id:
                 _bundle = self.bundles[existing_winning_agent_id]
                 _n_bar = len(_bundle)
                 for idx, task_id in enumerate(_bundle):
-                    if self.winning_agents[task_id] != existing_winning_agent_id:
+                    if self.winning_agents.get(task_id) != existing_winning_agent_id:
                         _n_bar = idx
                         break
                 _tasks_to_remove = set(_bundle[_n_bar:])
+                # Only reset own stale bids (CBBA 방식)
                 for _task_id in _bundle[_n_bar+1:]:
-                    self.winning_bids[_task_id] = float('-inf')
-                    self.winning_agents[_task_id] = None
+                    if self.winning_agents.get(_task_id) == existing_winning_agent_id:
+                        self.winning_bids[_task_id] = float('-inf')
+                        self.winning_agents[_task_id] = None
                 self.bundles[existing_winning_agent_id] = _bundle[0:_n_bar]
                 self.paths[existing_winning_agent_id] = [t for t in self.paths[existing_winning_agent_id] if t.task_id not in _tasks_to_remove]
 
@@ -165,7 +168,7 @@ class SGA(SyncAction):
                 # Skip if y's key is not in my_bid_list
                 continue       
 
-        ### Algorithm 3, Line 9        
+        ### Algorithm 3, Line 9
         best_task_id = max(my_bid_list, key=my_bid_list.get)
         best_task_score = my_bid_list[best_task_id]
 
@@ -184,6 +187,23 @@ class SGA(SyncAction):
         except IndexError as e:
             print(f"Error: {e}")     
 
+    # def calculate_score_along_path(self, agent, path):
+    #     """
+    #     Compute S^{p_i} in Eqn (11) in the CBBA paper
+    #     """
+
+    #     current_position = agent.position
+    #     expected_reward_from_task = 0
+    #     distance_to_next_task_from_start = 0
+    #     for task in path:
+    #         next_position = pygame.Vector2(task.position)
+    #         distance_to_next_task_from_start += current_position.distance_to(next_position)
+    #         # Time-discounted reward
+    #         expected_reward_from_task += LAMBDA**(distance_to_next_task_from_start/agent.max_speed + task.amount/agent.work_rate) #*task.amount
+    #         current_position = next_position
+
+    #     return expected_reward_from_task
+
     def calculate_score_along_path(self, agent, path): 
         """
         Compute S^{p_i} in Eqn (11) in the CBBA paper 
@@ -191,12 +211,12 @@ class SGA(SyncAction):
         
         current_position = agent.position
         expected_reward_from_task = 0
-        distance_to_next_task_from_start = 0
+        cumulative_time = 0
         for task in path:
             next_position = pygame.Vector2(task.position)
-            distance_to_next_task_from_start += current_position.distance_to(next_position)
-            # Time-discounted reward
-            expected_reward_from_task += LAMBDA**(distance_to_next_task_from_start/agent.max_speed + task.amount/agent.work_rate) #*task.amount            
+            cumulative_time += current_position.distance_to(next_position)  # / agent.max_speed # + task.amount / agent.work_rate
+            expected_reward_from_task += LAMBDA**cumulative_time
             current_position = next_position
 
         return expected_reward_from_task
+
